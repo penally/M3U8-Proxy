@@ -199,8 +199,6 @@ function getHandler(options, proxy) {
         checkRateLimit: null, // Function that may enforce a rate-limit by returning a non-empty string.
         redirectSameOrigin: false, // Redirect the client to the requested URL for same-origin requests.
         requireHeader: null, // Require a header to be set?
-        removeHeaders: [], // Strip these request headers.
-        setHeaders: {}, // Set these request headers.
         corsMaxAge: 0, // If set, an Access-Control-Max-Age header with this value (in seconds) will be added.
     };
 
@@ -293,27 +291,11 @@ function getHandler(options, proxy) {
 
             const uri = new URL(req.url ?? web_server_url, "http://localhost:3000");
             if (uri.pathname === "/m3u8-proxy") {
-                let headers = {};
-                try {
-                    headers = JSON.parse(uri.searchParams.get("headers") ?? "{}");
-                } catch (e: any) {
-                    res.writeHead(500);
-                    res.end(e.message);
-                    return;
-                }
                 const url = uri.searchParams.get("url");
-                return proxyM3U8(url ?? "", headers, res);
+                return proxyM3U8(url ?? "", res);
             } else if (uri.pathname === "/ts-proxy") {
-                let headers = {};
-                try {
-                    headers = JSON.parse(uri.searchParams.get("headers") ?? "{}");
-                } catch (e: any) {
-                    res.writeHead(500);
-                    res.end(e.message);
-                    return;
-                }
                 const url = uri.searchParams.get("url");
-                return proxyTs(url ?? "", headers, req, res);
+                return proxyTs(url ?? "", req, res);
             } else if (uri.pathname === "/") {
                 return res.end(readFileSync(join(__dirname, "../index.html")));
             } else {
@@ -361,14 +343,6 @@ function getHandler(options, proxy) {
 
         const isRequestedOverHttps = req.connection.encrypted || /^\s*https/.test(req.headers["x-forwarded-proto"]);
         const proxyBaseUrl = (isRequestedOverHttps ? "https://" : "http://") + req.headers.host;
-
-        corsAnywhere.removeHeaders.forEach(function (header) {
-            delete req.headers[header];
-        });
-
-        Object.keys(corsAnywhere.setHeaders).forEach(function (header) {
-            req.headers[header] = corsAnywhere.setHeaders[header];
-        });
 
         req.corsAnywhereRequestState.location = location;
         req.corsAnywhereRequestState.proxyBaseUrl = proxyBaseUrl;
@@ -450,20 +424,6 @@ export default function server() {
         originWhitelist: originWhitelist,
         requireHeader: [],
         checkRateLimit: createRateLimitChecker(process.env.CORSANYWHERE_RATELIMIT),
-        removeHeaders: [
-            "cookie",
-            "cookie2",
-            // Strip Heroku-specific headers
-            "x-request-start",
-            "x-request-id",
-            "via",
-            "connect-time",
-            "total-route-time",
-            // Other Heroku added debug headers
-            // 'x-forwarded-for',
-            // 'x-forwarded-proto',
-            // 'x-forwarded-port',
-        ],
         redirectSameOrigin: true,
         httpProxyOptions: {
             // Do not add X-Forwarded-For, etc. headers, because Heroku already adds it.
@@ -549,13 +509,10 @@ function createRateLimitChecker(CORSANYWHERE_RATELIMIT) {
 
 /**
  * @description Proxies m3u8 files and replaces the content to point to the proxy.
- * @param headers JSON headers
  * @param res Server response object
  */
-export async function proxyM3U8(url: string, headers: any, res: http.ServerResponse) {
-    const req = await axios(url, {
-        headers: headers,
-    }).catch((err) => {
+export async function proxyM3U8(url: string, res: http.ServerResponse) {
+    const req = await axios(url).catch((err) => {
         res.writeHead(500);
         res.end(err.message);
         return null;
@@ -574,14 +531,14 @@ export async function proxyM3U8(url: string, headers: any, res: http.ServerRespo
             if (line.startsWith("#")) {
                 if (line.startsWith("#EXT-X-KEY:")) {
                     const regex = /https?:\/\/[^\""\s]+/g;
-                    const url = `${web_server_url}${"/ts-proxy?url=" + encodeURIComponent(regex.exec(line)?.[0] ?? "") + "&headers=" + encodeURIComponent(JSON.stringify(headers))}`;
+                    const url = `${web_server_url}${"/ts-proxy?url=" + encodeURIComponent(regex.exec(line)?.[0] ?? "")}`;
                     newLines.push(line.replace(regex, url));
                 } else {
                     newLines.push(line);
                 }
             } else {
                 const uri = new URL(line, url);
-                newLines.push(`${web_server_url + "/m3u8-proxy?url=" + encodeURIComponent(uri.href) + "&headers=" + encodeURIComponent(JSON.stringify(headers))}`);
+                newLines.push(`${web_server_url + "/m3u8-proxy?url=" + encodeURIComponent(uri.href)}`);
             }
         }
 
@@ -603,7 +560,7 @@ export async function proxyM3U8(url: string, headers: any, res: http.ServerRespo
             if (line.startsWith("#")) {
                 if (line.startsWith("#EXT-X-KEY:")) {
                     const regex = /https?:\/\/[^\""\s]+/g;
-                    const url = `${web_server_url}${"/ts-proxy?url=" + encodeURIComponent(regex.exec(line)?.[0] ?? "") + "&headers=" + encodeURIComponent(JSON.stringify(headers))}`;
+                    const url = `${web_server_url}${"/ts-proxy?url=" + encodeURIComponent(regex.exec(line)?.[0] ?? "")}`;
                     newLines.push(line.replace(regex, url));
                 } else {
                     newLines.push(line);
@@ -611,9 +568,8 @@ export async function proxyM3U8(url: string, headers: any, res: http.ServerRespo
             } else {
                 const uri = new URL(line, url);
                 // CORS is needed since the TS files are not on the same domain as the client.
-                // This replaces each TS file to use a TS proxy with the headers attached.
-                // So each TS request will use the headers inputted to the proxy
-                newLines.push(`${web_server_url}${"/ts-proxy?url=" + encodeURIComponent(uri.href) + "&headers=" + encodeURIComponent(JSON.stringify(headers))}`);
+                // This replaces each TS file to use a TS proxy.
+                newLines.push(`${web_server_url}${"/ts-proxy?url=" + encodeURIComponent(uri.href)}`);
             }
         }
 
@@ -633,11 +589,10 @@ export async function proxyM3U8(url: string, headers: any, res: http.ServerRespo
 
 /**
  * @description Proxies TS files. Sometimes TS files require headers to be sent with the request.
- * @param headers JSON headers
  * @param req Client request object
  * @param res Server response object
  */
-export async function proxyTs(url: string, headers: any, req, res: http.ServerResponse) {
+export async function proxyTs(url: string, req, res: http.ServerResponse) {
     // I love how NodeJS HTTP request client only takes http URLs :D It's so fun!
     // I'll probably refactor this later.
 
@@ -657,10 +612,6 @@ export async function proxyTs(url: string, headers: any, req, res: http.ServerRe
         port: uri.port,
         path: uri.pathname + uri.search,
         method: req.method,
-        headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/80.0.3987.132 Safari/537.36",
-            ...headers,
-        },
     };
 
     // Proxy request and pipe to client
